@@ -1,22 +1,23 @@
 
 import 'package:flutter/foundation.dart';
-import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
+import 'package:sqflite/sqflite.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:sqflite_common_ffi_web/sqflite_ffi_web.dart';
 
 import '../models/produk.dart';
+import '../models/karyawan.dart';
 
-// Pengelola database SQLite SmartKasir
+// Kelas Pengelola Basis Data Lokal SQLite (Pola Desain Singleton)
 class DatabaseHelper {
-  // 1. SINGLETON
+  // Instansiasi tunggal statis
   static final DatabaseHelper instance = DatabaseHelper._init();
 
   static Database? _database;
 
-  // Konstruktor privat
   DatabaseHelper._init();
 
-  // 2. GETTER DATABASE
+  // Getter pembuka koneksi database aktif
   Future<Database> get database async {
     if (_database != null) return _database!;
 
@@ -24,32 +25,35 @@ class DatabaseHelper {
     return _database!;
   }
 
-  // 3. INISIALISASI DATABASE
+  // Inisialisasi berkas basis data SQLite
   Future<Database> _initDB(String filePath) async {
-    // Jika aplikasi berjalan di Chrome
     if (kIsWeb) {
       databaseFactory = databaseFactoryFfiWeb;
 
-      return await openDatabase(
+      return await databaseFactory.openDatabase(
         filePath,
-        version: 1,
+        options: OpenDatabaseOptions(
+          version: 2,
+          onCreate: _createDB,
+          onUpgrade: _onUpgradeDB,
+        ),
+      );
+    } else {
+      final dbPath = await getDatabasesPath();
+      final path = join(dbPath, filePath);
+
+      return await openDatabase(
+        path,
+        version: 2,
         onCreate: _createDB,
+        onUpgrade: _onUpgradeDB,
       );
     }
-
-    // Jika aplikasi berjalan di Android
-    final dbPath = await getDatabasesPath();
-    final path = join(dbPath, filePath);
-
-    return await openDatabase(
-      path,
-      version: 1,
-      onCreate: _createDB,
-    );
   }
 
-  // 4. MEMBUAT TABEL DAN DATA AWAL
-  Future<void> _createDB(Database db, int version) async {
+  // DDL: Pembuatan Tabel Basis Data (Versi Baru)
+  Future _createDB(Database db, int version) async {
+    // 1. Pembuatan Tabel Produk
     await db.execute('''
       CREATE TABLE produk (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,38 +69,140 @@ class DatabaseHelper {
       )
     ''');
 
-    // Memasukkan enam produk awal
+    // Memasukkan enam produk awal dari proyek Minggu 11
     for (final produk in produkAwalSQLite) {
       await db.insert('produk', produk.toMap());
     }
+
+    // 2. Pembuatan Tabel Karyawan
+    await db.execute('''
+      CREATE TABLE karyawan (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nama_karyawan TEXT NOT NULL,
+        pin TEXT NOT NULL,
+        peran TEXT NOT NULL
+      )
+    ''');
+
+    // 3. Memasukkan data staf awal otomatis
+    await db.rawInsert('''
+      INSERT INTO karyawan (nama_karyawan, pin, peran)
+      VALUES ('Ahmad Kasir', '1234', 'Kasir')
+    ''');
+
+    await db.rawInsert('''
+      INSERT INTO karyawan (nama_karyawan, pin, peran)
+      VALUES ('Siti Supervisor', '8888', 'Manajer')
+    ''');
   }
 
-  // 5. CREATE: MENAMBAHKAN PRODUK
+  // DDL: Migrasi Skema jika versi basis data ditingkatkan
+  Future _onUpgradeDB(
+    Database db,
+    int oldVersion,
+    int newVersion,
+  ) async {
+    if (oldVersion < 2) {
+      // Membuat tabel karyawan untuk database pengguna yang sudah ada
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS karyawan (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          nama_karyawan TEXT NOT NULL,
+          pin TEXT NOT NULL,
+          peran TEXT NOT NULL
+        )
+      ''');
+
+      // Memasukkan staf awal jika tabel baru dibuat
+      await db.rawInsert('''
+        INSERT INTO karyawan (nama_karyawan, pin, peran)
+        VALUES ('Ahmad Kasir', '1234', 'Kasir')
+      ''');
+
+      await db.rawInsert('''
+       INSERT INTO karyawan (nama_karyawan, pin, peran)
+       VALUES ('Siti Supervisor', '8888', 'Manajer')
+    ''');
+    }
+  }
+
+  // ==========================================
+  // METODE CRUD: TABEL KARYAWAN
+  // ==========================================
+
+  // 1. CREATE: Menyimpan Karyawan Baru
+  Future<int> insertKaryawan(Karyawan karyawan) async {
+    final db = await instance.database;
+
+    return await db.insert(
+      'karyawan',
+      karyawan.toMap(),
+    );
+  }
+
+  // 2. READ: Mengambil Seluruh Karyawan
+  Future<List<Karyawan>> getAllKaryawan() async {
+    final db = await instance.database;
+
+    final result = await db.query(
+      'karyawan',
+      orderBy: 'id ASC',
+    );
+
+    return result.map((json) => Karyawan.fromMap(json)).toList();
+  }
+
+  // 3. UPDATE: Memperbarui Data Karyawan
+  Future<int> updateKaryawan(Karyawan karyawan) async {
+    final db = await instance.database;
+
+    return await db.update(
+      'karyawan',
+      karyawan.toMap(),
+      where: 'id = ?',
+      whereArgs: [karyawan.id],
+    );
+  }
+
+  // 4. DELETE: Menghapus Karyawan Berdasarkan ID
+  Future<int> deleteKaryawan(int id) async {
+    final db = await instance.database;
+
+    return await db.delete(
+      'karyawan',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  // ==========================================
+  // METODE CRUD: TABEL PRODUK (DARI MINGGU 11)
+  // ==========================================
+
+  // CREATE: Menambahkan Produk
   Future<int> insertProduk(Produk produk) async {
     final db = await instance.database;
 
-    final id = await db.insert(
+    return await db.insert(
       'produk',
       produk.toMap(),
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
-
-    return id;
   }
 
-  // 6. READ: MENGAMBIL SEMUA PRODUK
+  // READ: Mengambil Semua Produk
   Future<List<Produk>> getAllProduk() async {
     final db = await instance.database;
 
     final result = await db.query(
       'produk',
-      orderBy: 'harga_jual ASC',
+      orderBy: 'id DESC',
     );
 
     return result.map((json) => Produk.fromMap(json)).toList();
   }
 
-  // 7. READ: FILTER BERDASARKAN KATEGORI
+  // READ: Filter Produk Berdasarkan Kategori
   Future<List<Produk>> getProdukByKategori(String kategori) async {
     final db = await instance.database;
 
@@ -114,7 +220,7 @@ class DatabaseHelper {
     return result.map((json) => Produk.fromMap(json)).toList();
   }
 
-  // 8. SEARCH: MENCARI PRODUK DENGAN SQL LIKE
+  // SEARCH: Mencari Produk dengan SQL LIKE
   Future<List<Produk>> searchProduk(String keyword) async {
     final db = await instance.database;
 
@@ -128,7 +234,7 @@ class DatabaseHelper {
     return result.map((json) => Produk.fromMap(json)).toList();
   }
 
-  // 9. UPDATE: MEMPERBARUI PRODUK
+  // UPDATE: Memperbarui Produk
   Future<int> updateProduk(Produk produk) async {
     final db = await instance.database;
 
@@ -140,7 +246,7 @@ class DatabaseHelper {
     );
   }
 
-  // 10. DELETE: MENGHAPUS PRODUK
+  // DELETE: Menghapus Produk
   Future<int> deleteProduk(int id) async {
     final db = await instance.database;
 
